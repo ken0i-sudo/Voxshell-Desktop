@@ -1,6 +1,7 @@
 use crate::error::VoxError;
-use rusqlite::{params, Connection};
-use std::path::{Path, PathBuf};
+use crate::security::rules_seed::seed_default_sandbox_rules;
+use rusqlite::Connection;
+use std::path::Path;
 
 const INIT_SCHEMA_SQL: &str = include_str!("../../migrations/001_init_v2_schema.sql");
 
@@ -24,7 +25,7 @@ pub fn init_database(db_path: &Path) -> Result<Connection, VoxError> {
     // NFR-4: Recover any commands stuck in 'EXECUTING' from an unexpected OS/app crash
     recover_interrupted_commands(&conn)?;
 
-    // Seed default ALLOW and BLOCK directories for the current OS user
+    // Seed default ALLOW and BLOCK directories from security::rules_seed
     seed_default_sandbox_rules(&conn)?;
 
     Ok(conn)
@@ -40,76 +41,6 @@ fn recover_interrupted_commands(conn: &Connection) -> Result<usize, VoxError> {
         [],
     )?;
     Ok(recovered)
-}
-
-/// Seeds the standard user directories (ALLOW) and protected subdirectories (BLOCK).
-fn seed_default_sandbox_rules(conn: &Connection) -> Result<(), VoxError> {
-    let allow_dirs: Vec<Option<(PathBuf, &str)>> = vec![
-        dirs::download_dir().map(|p| (p, "User Downloads Directory")),
-        dirs::document_dir().map(|p| (p, "User Documents Directory")),
-        dirs::desktop_dir().map(|p| (p, "User Desktop Directory")),
-        dirs::picture_dir().map(|p| (p, "User Pictures Directory")),
-        dirs::audio_dir().map(|p| (p, "User Music Directory")),
-        dirs::video_dir().map(|p| (p, "User Videos Directory")),
-    ];
-
-    for entry in allow_dirs.into_iter().flatten() {
-        let (path, desc) = entry;
-        let canonical = dunce::canonicalize(&path).unwrap_or(path);
-        conn.execute(
-            "INSERT OR IGNORE INTO sandbox_rules 
-             (path_pattern, match_type, rule_type, os_target, is_system_default, description)
-             VALUES (?1, 'PREFIX_DIR', 'ALLOW', 'ALL', 1, ?2)",
-            params![canonical.to_string_lossy().as_ref(), desc],
-        )?;
-    }
-
-    // Seed hard-blocked subdirectories inside user folders (FR-1 Step 5)
-    let mut block_dirs: Vec<(PathBuf, &str)> = Vec::new();
-
-    if let Some(docs) = dirs::document_dir() {
-        let canonical_docs = dunce::canonicalize(&docs).unwrap_or(docs);
-        block_dirs.push((
-            canonical_docs.join("PowerShell"),
-            "Block PowerShell Profile Directory",
-        ));
-        block_dirs.push((
-            canonical_docs.join("WindowsPowerShell"),
-            "Block WindowsPowerShell Profile Directory",
-        ));
-    }
-
-    if let Some(data_local) = dirs::data_local_dir() {
-        let canonical_local = dunce::canonicalize(&data_local).unwrap_or(data_local);
-        block_dirs.push((
-            canonical_local.join("VoxShell"),
-            "Block VoxShell Internal Database & Quarantine Folder",
-        ));
-    }
-
-    if let Some(data_roaming) = dirs::data_dir() {
-        let canonical_roaming = dunce::canonicalize(&data_roaming).unwrap_or(data_roaming);
-        block_dirs.push((
-            canonical_roaming
-                .join("Microsoft")
-                .join("Windows")
-                .join("Start Menu")
-                .join("Programs")
-                .join("Startup"),
-            "Block Windows Startup Folder",
-        ));
-    }
-
-    for (path, desc) in block_dirs {
-        conn.execute(
-            "INSERT OR IGNORE INTO sandbox_rules 
-             (path_pattern, match_type, rule_type, os_target, is_system_default, description)
-             VALUES (?1, 'PREFIX_DIR', 'BLOCK', 'ALL', 1, ?2)",
-            params![path.to_string_lossy().as_ref(), desc],
-        )?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -130,6 +61,12 @@ mod tests {
             )
             .expect("global_hotkey should be seeded");
         assert_eq!(hotkey, "Alt+Space");
+
+        // Verify sandbox_rules were seeded via rules_seed.rs
+        let rule_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sandbox_rules", [], |row| row.get(0))
+            .unwrap();
+        assert!(rule_count > 0, "Default sandbox rules should be seeded");
 
         // Insert a simulated stuck 'EXECUTING' command and verify NFR-4 recovery marks it 'FAILED'
         conn.execute(
