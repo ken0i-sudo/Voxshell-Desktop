@@ -27,6 +27,8 @@ sha2 = "0.10"
 uuid = { version = "1.10", features = ["v4", "fast-rng"] }
 thiserror = "1.0"
 async-trait = "0.1"
+cpal = "0.15"
+hound = "3.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

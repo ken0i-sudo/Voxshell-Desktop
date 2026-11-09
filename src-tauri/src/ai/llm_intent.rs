@@ -49,6 +49,88 @@ pub struct VoxShellIntentPayload {
 }
 
 impl VoxShellIntentPayload {
+    /// Deterministic local intent parser for Zero-Config offline mode & Dev Test Harness.
+    pub fn from_natural_text_fallback(query: &str) -> Self {
+        let lower = query.trim().to_lowercase();
+
+        if lower.starts_with("undo") {
+            return Self {
+                action_type: IntentActionType::SystemUndo,
+                human_summary: "Undo the most recent command".to_string(),
+                parameters: IntentParameters {
+                    package_query: None,
+                    source_base_dir: None,
+                    source_relative_path: None,
+                    file_filter_extensions: None,
+                    file_name_contains: None,
+                    destination_base_dir: None,
+                    destination_relative_path: None,
+                    create_destination_if_missing: None,
+                    recursive: false,
+                    upgrade_all: false,
+                    collision_policy: None,
+                },
+            };
+        }
+
+        if lower.contains("delete") || lower.contains("clean") || lower.contains("remove") {
+            let ext = if lower.contains("zip") {
+                vec!["zip".to_string()]
+            } else if lower.contains("pdf") {
+                vec!["pdf".to_string()]
+            } else {
+                vec!["tmp".to_string()]
+            };
+
+            return Self {
+                action_type: IntentActionType::FileDelete,
+                human_summary: format!("Quarantine delete .{} files in Downloads", ext[0]),
+                parameters: IntentParameters {
+                    package_query: None,
+                    source_base_dir: Some(BaseDirEnum::Downloads),
+                    source_relative_path: None,
+                    file_filter_extensions: Some(ext),
+                    file_name_contains: None,
+                    destination_base_dir: None,
+                    destination_relative_path: None,
+                    create_destination_if_missing: Some(false),
+                    recursive: false,
+                    upgrade_all: false,
+                    collision_policy: Some(CollisionPolicy::AutoRename),
+                },
+            };
+        }
+
+        // Default to moving matching files from Downloads to Documents/Invoices
+        let mut exts = Vec::new();
+        for candidate in ["pdf", "zip", "txt", "png", "jpg", "docx", "bat", "sh", "exe"] {
+            if lower.contains(candidate) {
+                exts.push(candidate.to_string());
+            }
+        }
+        if exts.is_empty() {
+            exts.push("pdf".to_string());
+        }
+
+        Self {
+            action_type: IntentActionType::FileMove,
+            human_summary: format!("Move {:?} files from Downloads to Documents/Invoices", exts),
+            parameters: IntentParameters {
+                package_query: None,
+                source_base_dir: Some(BaseDirEnum::Downloads),
+                source_relative_path: None,
+                file_filter_extensions: Some(exts),
+                file_name_contains: None,
+                destination_base_dir: Some(BaseDirEnum::Documents),
+                destination_relative_path: Some("Invoices".to_string()),
+                create_destination_if_missing: Some(true),
+                recursive: false,
+                upgrade_all: false,
+                collision_policy: Some(CollisionPolicy::AutoRename),
+            },
+        }
+    }
+
     /// Parses and validates a raw JSON string returned by the LLM.
     pub fn from_llm_json(raw_json: &str) -> Result<Self, VoxError> {
         serde_json::from_str::<VoxShellIntentPayload>(raw_json).map_err(|e| {
